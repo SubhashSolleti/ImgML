@@ -2,7 +2,7 @@
 ImgML — Flask Web Application
 
 Handles PDF uploads, invokes the extraction engine,
-and serves extracted images as a downloadable ZIP.
+and serves extracted images as downloadable ZIPs (per-PDF and combined).
 """
 
 import os
@@ -10,6 +10,7 @@ import uuid
 import shutil
 import zipfile
 import json
+import glob
 from flask import (
     Flask, render_template, request, jsonify,
     send_file, url_for, abort
@@ -44,6 +45,7 @@ def index():
 def upload():
     """
     Accept one or more PDF files, extract images, return JSON results.
+    Creates individual ZIPs per PDF and a combined ZIP for all.
     """
     if 'files' not in request.files:
         return jsonify({'error': 'No files provided'}), 400
@@ -61,8 +63,8 @@ def upload():
     os.makedirs(session_output_dir, exist_ok=True)
 
     all_results = []
+    per_pdf_results = []  # List of {paper_name, results, download_url}
     errors = []
-    paper_names = []
 
     for file in files:
         if not file or file.filename == '':
@@ -75,16 +77,50 @@ def upload():
         # Save uploaded file
         safe_name = file.filename.replace(' ', '_')
         paper_name = os.path.splitext(file.filename)[0]
-        paper_names.append(paper_name)
+        safe_paper = paper_name.replace(' ', '_')
         filepath = os.path.join(session_upload_dir, safe_name)
         file.save(filepath)
 
+        # Create a per-PDF output subdirectory
+        pdf_output_dir = os.path.join(session_output_dir, safe_paper)
+        os.makedirs(pdf_output_dir, exist_ok=True)
+
         try:
-            # Extract images
-            results = extract_images_from_pdf(filepath, session_output_dir)
+            # Extract images into per-PDF folder
+            results = extract_images_from_pdf(filepath, pdf_output_dir)
             for r in results:
                 r['source_pdf'] = file.filename
+                r['paper_key'] = safe_paper
             all_results.extend(results)
+
+            # Create individual ZIP for this PDF
+            if results:
+                pdf_zip_name = f"{session_id}_{safe_paper}.zip"
+                pdf_zip_path = os.path.join(OUTPUT_DIR, pdf_zip_name)
+                with zipfile.ZipFile(pdf_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for r in results:
+                        img_path = os.path.join(pdf_output_dir, r['filename'])
+                        if os.path.exists(img_path):
+                            zf.write(img_path, r['filename'])
+
+                per_pdf_results.append({
+                    'paper_name': paper_name,
+                    'paper_key': safe_paper,
+                    'image_count': len(results),
+                    'images': results,
+                    'download_url': url_for('download_zip',
+                                            session_id=session_id,
+                                            zip_key=safe_paper),
+                })
+            else:
+                per_pdf_results.append({
+                    'paper_name': paper_name,
+                    'paper_key': safe_paper,
+                    'image_count': 0,
+                    'images': [],
+                    'download_url': None,
+                })
+
         except Exception as e:
             errors.append(f"Error processing '{file.filename}': {str(e)}")
 
@@ -94,27 +130,16 @@ def upload():
         shutil.rmtree(session_output_dir, ignore_errors=True)
         return jsonify({'error': '; '.join(errors)}), 400
 
-    # Build a human-readable ZIP name from the paper name(s)
-    if len(paper_names) == 1:
-        zip_display_name = paper_names[0].replace(' ', '_') + '_images.zip'
-    else:
-        combined = '_'.join(n.replace(' ', '_')[:30] for n in paper_names[:3])
-        if len(paper_names) > 3:
-            combined += f'_and_{len(paper_names) - 3}_more'
-        zip_display_name = combined + '_images.zip'
-
-    # Create ZIP file
-    zip_path = os.path.join(OUTPUT_DIR, f"{session_id}.zip")
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for result in all_results:
-            img_path = os.path.join(session_output_dir, result['filename'])
-            if os.path.exists(img_path):
-                zf.write(img_path, result['filename'])
-
-    # Save the display name for the download route
-    meta_path = os.path.join(OUTPUT_DIR, f"{session_id}.meta")
-    with open(meta_path, 'w') as f:
-        json.dump({'zip_name': zip_display_name}, f)
+    # Create combined ZIP with all images (organized in folders per PDF)
+    combined_zip_path = os.path.join(OUTPUT_DIR, f"{session_id}_all.zip")
+    with zipfile.ZipFile(combined_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for pdf_info in per_pdf_results:
+            paper_key = pdf_info['paper_key']
+            for r in pdf_info['images']:
+                img_path = os.path.join(session_output_dir, paper_key, r['filename'])
+                if os.path.exists(img_path):
+                    # Store in a subfolder named after the paper
+                    zf.write(img_path, os.path.join(paper_key, r['filename']))
 
     # Clean up uploaded files (keep output for thumbnail serving)
     shutil.rmtree(session_upload_dir, ignore_errors=True)
@@ -122,49 +147,52 @@ def upload():
     response = {
         'session_id': session_id,
         'total_images': len(all_results),
-        'images': all_results,
+        'papers': per_pdf_results,
         'errors': errors,
-        'download_url': url_for('download_zip', session_id=session_id),
+        'download_all_url': url_for('download_zip',
+                                     session_id=session_id,
+                                     zip_key='all'),
     }
 
     return jsonify(response)
 
 
-@app.route('/download/<session_id>')
-def download_zip(session_id):
-    """Stream the ZIP file for download."""
-    zip_path = os.path.join(OUTPUT_DIR, f"{session_id}.zip")
+@app.route('/download/<session_id>/<zip_key>')
+def download_zip(session_id, zip_key):
+    """
+    Stream a ZIP file for download.
+    zip_key can be 'all' for the combined ZIP, or a paper key for individual.
+    """
+    if '..' in session_id or '..' in zip_key:
+        abort(400)
+
+    zip_path = os.path.join(OUTPUT_DIR, f"{session_id}_{zip_key}.zip")
 
     if not os.path.exists(zip_path):
         abort(404)
 
-    # Read the display name from metadata
-    meta_path = os.path.join(OUTPUT_DIR, f"{session_id}.meta")
-    zip_name = f"extracted_images_{session_id[:8]}.zip"
-    if os.path.exists(meta_path):
-        try:
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-            zip_name = meta.get('zip_name', zip_name)
-        except Exception:
-            pass
+    if zip_key == 'all':
+        download_name = "all_extracted_images.zip"
+    else:
+        download_name = f"{zip_key}_images.zip"
 
     return send_file(
         zip_path,
         mimetype='application/zip',
         as_attachment=True,
-        download_name=zip_name
+        download_name=download_name
     )
 
 
-@app.route('/thumbnail/<session_id>/<filename>')
-def serve_thumbnail(session_id, filename):
+@app.route('/thumbnail/<session_id>/<paper_key>/<filename>')
+def serve_thumbnail(session_id, paper_key, filename):
     """Serve an extracted image as a thumbnail preview."""
     # Sanitize to prevent directory traversal
-    if '..' in session_id or '..' in filename:
-        abort(400)
+    for part in (session_id, paper_key, filename):
+        if '..' in part:
+            abort(400)
 
-    img_path = os.path.join(OUTPUT_DIR, session_id, filename)
+    img_path = os.path.join(OUTPUT_DIR, session_id, paper_key, filename)
 
     if not os.path.exists(img_path):
         abort(404)
@@ -179,13 +207,11 @@ def cleanup(session_id):
         abort(400)
 
     session_output_dir = os.path.join(OUTPUT_DIR, session_id)
-    zip_path = os.path.join(OUTPUT_DIR, f"{session_id}.zip")
-    meta_path = os.path.join(OUTPUT_DIR, f"{session_id}.meta")
-
     shutil.rmtree(session_output_dir, ignore_errors=True)
-    for path in (zip_path, meta_path):
-        if os.path.exists(path):
-            os.remove(path)
+
+    # Remove all ZIP and meta files for this session
+    for f in glob.glob(os.path.join(OUTPUT_DIR, f"{session_id}*.zip")):
+        os.remove(f)
 
     return jsonify({'status': 'cleaned up'})
 

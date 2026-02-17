@@ -12,22 +12,46 @@ from PIL import Image
 import io
 
 
-# Regex for matching figure labels in text (case-insensitive)
-FIGURE_PATTERN = re.compile(
-    r'(?i)\b(?:fig(?:ure)?)\s*\.?\s*(\d+\s*[a-zA-Z]?(?:\s*[-–]\s*[a-zA-Z])?)',
-    re.IGNORECASE
-)
+# Regex patterns for matching figure labels (case-insensitive)
+FIGURE_PATTERNS = [
+    # "Figure 1", "Fig. 2", "Fig 3a", "FIGURE 4", "figure 5b"
+    re.compile(
+        r'\b(?:fig(?:ure)?)\s*\.?\s*(\d+\s*[a-zA-Z]?(?:\s*[-–]\s*[a-zA-Z])?)',
+        re.IGNORECASE
+    ),
+    # "Fig. 1:", "Figure 2.", "Fig 3 -"
+    re.compile(
+        r'\b(?:fig(?:ure)?)\s*\.?\s*(\d+)\s*[.:)\-–]',
+        re.IGNORECASE
+    ),
+]
+
+# Minimum dimensions to consider an image as a figure (not an icon/bullet)
+MIN_WIDTH = 80
+MIN_HEIGHT = 80
+
+# Minimum total pixel area for meaningful images
+MIN_AREA = 10000  # ~100x100
 
 
-def _find_figure_label_on_page(page):
+def _find_figure_labels_on_page(page):
     """
-    Search for figure labels on a PDF page.
-    Returns a list of figure labels found (e.g., ['1', '2a', '3']).
+    Search for figure labels on a PDF page using multiple regex patterns.
+    Returns a deduplicated list of figure labels found (e.g., ['1', '2a', '3']).
     """
     text = page.get_text("text")
-    matches = FIGURE_PATTERN.findall(text)
-    # Clean up whitespace in matches
-    return [m.strip() for m in matches]
+    labels = []
+    seen = set()
+
+    for pattern in FIGURE_PATTERNS:
+        matches = pattern.findall(text)
+        for m in matches:
+            clean = m.strip()
+            if clean and clean not in seen:
+                seen.add(clean)
+                labels.append(clean)
+
+    return labels
 
 
 def _get_image_from_xref(doc, xref):
@@ -46,16 +70,22 @@ def _get_image_from_xref(doc, xref):
         height = img_info.get("height", 0)
 
         # Skip very small images (likely icons, bullets, decorations)
-        if width < 50 or height < 50:
+        if width < MIN_WIDTH or height < MIN_HEIGHT:
+            return None, None
+
+        # Skip images with very small total area
+        if width * height < MIN_AREA:
             return None, None
 
         # Convert to PIL Image
         pil_image = Image.open(io.BytesIO(image_bytes))
 
-        # Convert CMYK or other modes to RGB
-        if pil_image.mode in ("CMYK", "P", "LA"):
+        # Convert CMYK or other modes to RGB for PNG compatibility
+        if pil_image.mode in ("CMYK",):
+            pil_image = pil_image.convert("RGB")
+        elif pil_image.mode in ("P", "LA"):
             pil_image = pil_image.convert("RGBA")
-        elif pil_image.mode not in ("RGB", "RGBA"):
+        elif pil_image.mode not in ("RGB", "RGBA", "L"):
             pil_image = pil_image.convert("RGB")
 
         metadata = {
@@ -68,6 +98,37 @@ def _get_image_from_xref(doc, xref):
 
     except Exception:
         return None, None
+
+
+def _is_likely_figure(pil_image, img_meta):
+    """
+    Heuristic to determine if an image is likely a figure vs. a logo/watermark.
+    Returns True if the image looks like a meaningful figure.
+    """
+    w = img_meta["width"]
+    h = img_meta["height"]
+
+    # Very narrow or very tall images are often decorative bars/lines
+    aspect_ratio = max(w, h) / max(min(w, h), 1)
+    if aspect_ratio > 15:
+        return False
+
+    # Check if image is nearly all one color (likely a blank/separator)
+    try:
+        if pil_image.mode in ("RGBA",):
+            check_img = pil_image.convert("RGB")
+        else:
+            check_img = pil_image
+
+        # Sample colors to check diversity
+        small = check_img.resize((20, 20), Image.LANCZOS)
+        colors = small.getcolors(maxcolors=400)
+        if colors and len(colors) <= 2:
+            return False
+    except Exception:
+        pass
+
+    return True
 
 
 def extract_images_from_pdf(pdf_path, output_dir):
@@ -87,13 +148,21 @@ def extract_images_from_pdf(pdf_path, output_dir):
     pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
     results = []
     seen_xrefs = set()  # Track already-extracted images to avoid duplicates
-    figure_counter = 0
+
+    # First pass: collect all figure labels across the document
+    all_page_labels = {}
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        labels = _find_figure_labels_on_page(page)
+        if labels:
+            all_page_labels[page_num] = labels
+
+    # Second pass: extract images
+    global_figure_idx = 0
 
     for page_num in range(len(doc)):
         page = doc[page_num]
-
-        # Find figure labels on this page
-        figure_labels = _find_figure_label_on_page(page)
+        figure_labels = all_page_labels.get(page_num, [])
 
         # Get all images on this page
         image_list = page.get_images(full=True)
@@ -101,7 +170,7 @@ def extract_images_from_pdf(pdf_path, output_dir):
         if not image_list:
             continue
 
-        # Track which label index to assign
+        # Track which label index to assign for this page
         label_idx = 0
 
         for img_idx, img_info in enumerate(image_list):
@@ -116,7 +185,11 @@ def extract_images_from_pdf(pdf_path, output_dir):
             if pil_image is None:
                 continue
 
-            figure_counter += 1
+            # Apply heuristic filter
+            if not _is_likely_figure(pil_image, img_meta):
+                continue
+
+            global_figure_idx += 1
 
             # Determine the filename
             if label_idx < len(figure_labels):
