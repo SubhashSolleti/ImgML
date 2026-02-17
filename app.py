@@ -62,6 +62,7 @@ def upload():
 
     all_results = []
     errors = []
+    paper_names = []
 
     for file in files:
         if not file or file.filename == '':
@@ -73,6 +74,8 @@ def upload():
 
         # Save uploaded file
         safe_name = file.filename.replace(' ', '_')
+        paper_name = os.path.splitext(file.filename)[0]
+        paper_names.append(paper_name)
         filepath = os.path.join(session_upload_dir, safe_name)
         file.save(filepath)
 
@@ -91,6 +94,15 @@ def upload():
         shutil.rmtree(session_output_dir, ignore_errors=True)
         return jsonify({'error': '; '.join(errors)}), 400
 
+    # Build a human-readable ZIP name from the paper name(s)
+    if len(paper_names) == 1:
+        zip_display_name = paper_names[0].replace(' ', '_') + '_images.zip'
+    else:
+        combined = '_'.join(n.replace(' ', '_')[:30] for n in paper_names[:3])
+        if len(paper_names) > 3:
+            combined += f'_and_{len(paper_names) - 3}_more'
+        zip_display_name = combined + '_images.zip'
+
     # Create ZIP file
     zip_path = os.path.join(OUTPUT_DIR, f"{session_id}.zip")
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -98,6 +110,11 @@ def upload():
             img_path = os.path.join(session_output_dir, result['filename'])
             if os.path.exists(img_path):
                 zf.write(img_path, result['filename'])
+
+    # Save the display name for the download route
+    meta_path = os.path.join(OUTPUT_DIR, f"{session_id}.meta")
+    with open(meta_path, 'w') as f:
+        json.dump({'zip_name': zip_display_name}, f)
 
     # Clean up uploaded files (keep output for thumbnail serving)
     shutil.rmtree(session_upload_dir, ignore_errors=True)
@@ -121,11 +138,22 @@ def download_zip(session_id):
     if not os.path.exists(zip_path):
         abort(404)
 
+    # Read the display name from metadata
+    meta_path = os.path.join(OUTPUT_DIR, f"{session_id}.meta")
+    zip_name = f"extracted_images_{session_id[:8]}.zip"
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+            zip_name = meta.get('zip_name', zip_name)
+        except Exception:
+            pass
+
     return send_file(
         zip_path,
         mimetype='application/zip',
         as_attachment=True,
-        download_name=f"extracted_images_{session_id[:8]}.zip"
+        download_name=zip_name
     )
 
 
@@ -152,10 +180,12 @@ def cleanup(session_id):
 
     session_output_dir = os.path.join(OUTPUT_DIR, session_id)
     zip_path = os.path.join(OUTPUT_DIR, f"{session_id}.zip")
+    meta_path = os.path.join(OUTPUT_DIR, f"{session_id}.meta")
 
     shutil.rmtree(session_output_dir, ignore_errors=True)
-    if os.path.exists(zip_path):
-        os.remove(zip_path)
+    for path in (zip_path, meta_path):
+        if os.path.exists(path):
+            os.remove(path)
 
     return jsonify({'status': 'cleaned up'})
 
