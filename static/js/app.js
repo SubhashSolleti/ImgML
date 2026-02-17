@@ -1,14 +1,18 @@
 /**
  * ImgML — Frontend Application Logic
  *
- * Handles drag & drop, file upload, progress tracking,
- * image preview rendering grouped by PDF, and ZIP downloads.
+ * Handles:
+ * 1. Tab switching between Upload PDFs and arXiv Search
+ * 2. Drag & drop / file upload, progress, image preview, ZIP downloads
+ * 3. arXiv search, paper selection, extraction, and results display
  */
 
 (function () {
     'use strict';
 
-    // --- DOM Elements ---
+    // ============================================================
+    // DOM Elements — Upload Tab
+    // ============================================================
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
     const fileList = document.getElementById('file-list');
@@ -28,24 +32,85 @@
     const downloadEachBtn = document.getElementById('download-each-btn');
     const newExtractionBtn = document.getElementById('new-extraction-btn');
 
-    // --- State ---
+    // ============================================================
+    // DOM Elements — arXiv Tab
+    // ============================================================
+    const arxivQuery = document.getElementById('arxiv-query');
+    const arxivSort = document.getElementById('arxiv-sort');
+    const arxivSearchBtn = document.getElementById('arxiv-search-btn');
+    const arxivSearchSection = document.getElementById('arxiv-search-section');
+    const arxivSearching = document.getElementById('arxiv-searching');
+    const arxivSearchStatus = document.getElementById('arxiv-search-status');
+    const arxivResultsSection = document.getElementById('arxiv-results-section');
+    const arxivResultsCount = document.getElementById('arxiv-results-count');
+    const arxivSelectedCount = document.getElementById('arxiv-selected-count');
+    const arxivSelectAllBtn = document.getElementById('arxiv-select-all');
+    const arxivExtractBtn = document.getElementById('arxiv-extract-btn');
+    const arxivPapersList = document.getElementById('arxiv-papers-list');
+    const arxivLoadMoreWrap = document.getElementById('arxiv-load-more-wrap');
+    const arxivLoadMoreBtn = document.getElementById('arxiv-load-more');
+
+    const arxivExtractProgress = document.getElementById('arxiv-extract-progress');
+    const arxivExtractStatus = document.getElementById('arxiv-extract-status');
+    const arxivProgressFill = document.getElementById('arxiv-progress-fill');
+
+    const arxivExtractionResults = document.getElementById('arxiv-extraction-results');
+    const arxivExtractSummary = document.getElementById('arxiv-extract-summary');
+    const arxivDownloadAll = document.getElementById('arxiv-download-all');
+    const arxivDownloadEach = document.getElementById('arxiv-download-each');
+    const arxivNewSearch = document.getElementById('arxiv-new-search');
+    const arxivExtractErrors = document.getElementById('arxiv-extract-errors');
+    const arxivExtractGrid = document.getElementById('arxiv-extract-grid');
+
+    // ============================================================
+    // State
+    // ============================================================
     let selectedFiles = [];
     let currentSessionId = null;
+    let arxivSelectedPapers = new Map(); // arxiv_id => paper data
+    let arxivCurrentQuery = '';
+    let arxivCurrentStart = 0;
+    let arxivTotalResults = 0;
+    let arxivSessionId = null;
 
-    // --- Utility Functions ---
+    // ============================================================
+    // Utility Functions
+    // ============================================================
     function formatFileSize(bytes) {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
-    function show(el) {
-        el.classList.remove('hidden');
+    function show(el) { el.classList.remove('hidden'); }
+    function hide(el) { el.classList.add('hidden'); }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
     }
 
-    function hide(el) {
-        el.classList.add('hidden');
-    }
+    // ============================================================
+    // Tab Navigation
+    // ============================================================
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const tab = btn.dataset.tab;
+
+            // Update button states
+            document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+
+            // Update content visibility
+            document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+        });
+    });
+
+    // ============================================================
+    // UPLOAD TAB — Drag & Drop, File Management, Extraction
+    // ============================================================
 
     // --- Drag & Drop ---
     dropZone.addEventListener('click', () => fileInput.click());
@@ -83,7 +148,6 @@
     // --- File Management ---
     function addFiles(files) {
         for (const file of files) {
-            // Avoid duplicates
             const exists = selectedFiles.some(
                 (f) => f.name === file.name && f.size === file.size
             );
@@ -121,7 +185,6 @@
             fileItems.appendChild(li);
         });
 
-        // Attach remove handlers
         fileItems.querySelectorAll('.file-remove').forEach((btn) => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -130,17 +193,10 @@
         });
     }
 
-    function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
-    }
-
     // --- Upload & Extraction ---
     extractBtn.addEventListener('click', async () => {
         if (selectedFiles.length === 0) return;
 
-        // Switch to progress view
         hide(uploadSection);
         hide(resultsSection);
         show(progressSection);
@@ -148,14 +204,12 @@
         progressFill.style.width = '0%';
         progressText.textContent = 'Uploading files...';
 
-        // Build FormData
         const formData = new FormData();
         for (const file of selectedFiles) {
             formData.append('files', file);
         }
 
         try {
-            // Animate progress indeterminately
             let progress = 0;
             const progressInterval = setInterval(() => {
                 if (progress < 85) {
@@ -180,13 +234,11 @@
 
             const data = await response.json();
 
-            // Complete progress
             progressFill.style.width = '100%';
             progressText.textContent = 'Extraction complete!';
 
             await new Promise((r) => setTimeout(r, 500));
 
-            // Show results
             currentSessionId = data.session_id;
             showResults(data);
         } catch (error) {
@@ -202,35 +254,43 @@
         }
     });
 
-    // --- Results Display ---
-    function showResults(data) {
-        hide(progressSection);
-        show(resultsSection);
+    // --- Results Display (shared between Upload and arXiv) ---
+    function showResults(data, containerOverrides) {
+        const containers = containerOverrides || {
+            section: resultsSection,
+            progressSection: progressSection,
+            summary: resultsSummary,
+            errors: errorsContainer,
+            grid: imageGrid,
+            downloadAll: downloadAllBtn,
+            downloadEach: downloadEachBtn,
+        };
+
+        hide(containers.progressSection);
+        show(containers.section);
 
         const count = data.total_images;
         const paperCount = data.papers ? data.papers.length : 0;
-        resultsSummary.textContent = `Found ${count} image${count !== 1 ? 's' : ''} across ${paperCount} PDF${paperCount !== 1 ? 's' : ''}`;
+        containers.summary.textContent = `Found ${count} image${count !== 1 ? 's' : ''} across ${paperCount} PDF${paperCount !== 1 ? 's' : ''}`;
 
         // Show errors if any
         if (data.errors && data.errors.length > 0) {
-            show(errorsContainer);
-            errorsContainer.innerHTML = data.errors
+            show(containers.errors);
+            containers.errors.innerHTML = data.errors
                 .map((e) => `<p>⚠ ${escapeHtml(e)}</p>`)
                 .join('');
         } else {
-            hide(errorsContainer);
+            hide(containers.errors);
         }
 
         // Render grouped image results
-        imageGrid.innerHTML = '';
+        containers.grid.innerHTML = '';
 
         if (data.papers && data.papers.length > 0) {
             data.papers.forEach((paper) => {
-                // Paper group container
                 const group = document.createElement('div');
                 group.className = 'paper-group';
 
-                // Paper header with name and individual download button
                 const header = document.createElement('div');
                 header.className = 'paper-group-header';
 
@@ -263,7 +323,6 @@
 
                 group.appendChild(header);
 
-                // Image grid for this paper
                 if (paper.images && paper.images.length > 0) {
                     const grid = document.createElement('div');
                     grid.className = 'paper-image-grid';
@@ -296,16 +355,16 @@
                     group.appendChild(empty);
                 }
 
-                imageGrid.appendChild(group);
+                containers.grid.appendChild(group);
             });
 
-            // Enable "Download All" button
-            downloadAllBtn.onclick = () => {
+            // Download All
+            containers.downloadAll.onclick = () => {
                 window.location.href = data.download_all_url;
             };
 
-            // Enable "Download Each" — staggered individual ZIP downloads
-            downloadEachBtn.onclick = () => {
+            // Download Each — staggered individual ZIP downloads
+            containers.downloadEach.onclick = () => {
                 const downloadablePapers = data.papers.filter(p => p.download_url && p.image_count > 0);
                 downloadablePapers.forEach((paper, idx) => {
                     setTimeout(() => {
@@ -315,20 +374,19 @@
                         document.body.appendChild(a);
                         a.click();
                         document.body.removeChild(a);
-                    }, idx * 500);  // 500ms stagger to avoid browser blocking
+                    }, idx * 500);
                 });
             };
 
-            // Only show bulk download buttons if more than one paper
             if (paperCount > 1) {
-                show(downloadAllBtn);
-                show(downloadEachBtn);
+                show(containers.downloadAll);
+                show(containers.downloadEach);
             } else {
-                hide(downloadAllBtn);
-                hide(downloadEachBtn);
+                hide(containers.downloadAll);
+                hide(containers.downloadEach);
             }
         } else {
-            imageGrid.innerHTML = `
+            containers.grid.innerHTML = `
                 <div style="text-align: center; padding: 40px; color: var(--text-muted);">
                     <p>No images were found in the uploaded PDFs.</p>
                 </div>
@@ -338,21 +396,322 @@
 
     // --- New Extraction ---
     newExtractionBtn.addEventListener('click', () => {
-        // Clean up server-side session
         if (currentSessionId) {
             fetch(`/cleanup/${currentSessionId}`, { method: 'POST' }).catch(() => { });
             currentSessionId = null;
         }
 
-        // Reset state
         selectedFiles = [];
         renderFileList();
         imageGrid.innerHTML = '';
         hide(errorsContainer);
 
-        // Switch views
         hide(resultsSection);
         hide(progressSection);
         show(uploadSection);
     });
+
+
+    // ============================================================
+    // ARXIV TAB — Search, Selection, Extraction
+    // ============================================================
+
+    // --- Search ---
+    arxivSearchBtn.addEventListener('click', () => performArxivSearch(true));
+
+    arxivQuery.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            performArxivSearch(true);
+        }
+    });
+
+    async function performArxivSearch(isNewSearch) {
+        const query = arxivQuery.value.trim();
+        if (!query) return;
+
+        if (isNewSearch) {
+            arxivCurrentQuery = query;
+            arxivCurrentStart = 0;
+            arxivPapersList.innerHTML = '';
+            arxivSelectedPapers.clear();
+            updateSelectionUI();
+        }
+
+        // Show searching indicator
+        show(arxivSearching);
+        hide(arxivResultsSection);
+        hide(arxivExtractionResults);
+        hide(arxivExtractProgress);
+        arxivSearchStatus.textContent = 'Querying the arXiv database...';
+
+        const sort = arxivSort.value;
+        const size = 50;
+
+        try {
+            const url = `/arxiv/search?q=${encodeURIComponent(arxivCurrentQuery)}&start=${arxivCurrentStart}&size=${size}&sort=${sort}`;
+            const response = await fetch(url);
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.error || 'Search failed');
+            }
+
+            const data = await response.json();
+            arxivTotalResults = data.total_results;
+
+            hide(arxivSearching);
+            show(arxivResultsSection);
+
+            // Update results count
+            const endIndex = Math.min(arxivCurrentStart + data.papers.length, arxivTotalResults);
+            arxivResultsCount.textContent = `Showing ${arxivCurrentStart + 1}–${endIndex} of ${arxivTotalResults.toLocaleString()} results for "${escapeHtml(arxivCurrentQuery)}"`;
+
+            // Render papers
+            renderArxivPapers(data.papers);
+
+            // Update pagination
+            arxivCurrentStart += data.papers.length;
+            if (arxivCurrentStart < arxivTotalResults && data.papers.length === size) {
+                show(arxivLoadMoreWrap);
+            } else {
+                hide(arxivLoadMoreWrap);
+            }
+
+        } catch (error) {
+            hide(arxivSearching);
+            show(arxivResultsSection);
+            arxivResultsCount.textContent = `Error: ${error.message}`;
+            hide(arxivLoadMoreWrap);
+        }
+    }
+
+    function renderArxivPapers(papers) {
+        papers.forEach((paper) => {
+            const card = document.createElement('div');
+            card.className = 'arxiv-paper-card';
+            card.dataset.arxivId = paper.arxiv_id;
+
+            if (arxivSelectedPapers.has(paper.arxiv_id)) {
+                card.classList.add('selected');
+            }
+
+            // Authors (show max 5)
+            const authorStr = paper.authors.length > 5
+                ? paper.authors.slice(0, 5).join(', ') + ` +${paper.authors.length - 5} more`
+                : paper.authors.join(', ');
+
+            // Categories
+            const catHtml = paper.categories.slice(0, 4).map((cat) => {
+                const isPrimary = cat === paper.primary_category;
+                return `<span class="arxiv-cat-badge${isPrimary ? ' primary' : ''}">${escapeHtml(cat)}</span>`;
+            }).join('');
+
+            card.innerHTML = `
+                <div class="arxiv-paper-top">
+                    <div class="arxiv-checkbox">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                    </div>
+                    <div class="arxiv-paper-body">
+                        <div class="arxiv-paper-title">${escapeHtml(paper.title)}</div>
+                        <div class="arxiv-paper-authors">${escapeHtml(authorStr)}</div>
+                        <div class="arxiv-paper-meta">
+                            <span class="arxiv-paper-id">${escapeHtml(paper.arxiv_id)}</span>
+                            <span class="arxiv-paper-date">Published: ${paper.published}</span>
+                            ${paper.comment ? `<span class="arxiv-paper-date">${escapeHtml(paper.comment.substring(0, 60))}</span>` : ''}
+                        </div>
+                        <div class="arxiv-categories">${catHtml}</div>
+                        ${paper.abstract ? `
+                            <div class="arxiv-abstract">
+                                <div class="arxiv-abstract-text">${escapeHtml(paper.abstract)}</div>
+                                <button class="abstract-toggle" onclick="event.stopPropagation(); this.parentElement.classList.toggle('expanded'); this.textContent = this.parentElement.classList.contains('expanded') ? 'Show less' : 'Show more'">Show more</button>
+                            </div>
+                        ` : ''}
+                        <div class="arxiv-paper-links">
+                            <a href="${paper.abs_url}" target="_blank" rel="noopener" class="arxiv-link" onclick="event.stopPropagation()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                Abstract
+                            </a>
+                            <a href="${paper.pdf_url}" target="_blank" rel="noopener" class="arxiv-link" onclick="event.stopPropagation()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                PDF
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Toggle selection on click
+            card.addEventListener('click', () => {
+                const id = paper.arxiv_id;
+                if (arxivSelectedPapers.has(id)) {
+                    arxivSelectedPapers.delete(id);
+                    card.classList.remove('selected');
+                } else {
+                    if (arxivSelectedPapers.size >= 50) {
+                        // Flash the limit warning
+                        arxivSelectedCount.textContent = 'Max 50 papers!';
+                        arxivSelectedCount.style.color = 'var(--error)';
+                        setTimeout(() => {
+                            arxivSelectedCount.style.color = '';
+                            updateSelectionUI();
+                        }, 1500);
+                        return;
+                    }
+                    arxivSelectedPapers.set(id, {
+                        arxiv_id: id,
+                        title: paper.title,
+                    });
+                    card.classList.add('selected');
+                }
+                updateSelectionUI();
+            });
+
+            arxivPapersList.appendChild(card);
+        });
+    }
+
+    function updateSelectionUI() {
+        const count = arxivSelectedPapers.size;
+        arxivSelectedCount.textContent = `${count} selected`;
+        arxivExtractBtn.disabled = count === 0;
+
+        if (count === 0) {
+            arxivSelectAllBtn.textContent = 'Select All';
+        } else {
+            arxivSelectAllBtn.textContent = 'Deselect All';
+        }
+    }
+
+    // --- Select / Deselect All ---
+    arxivSelectAllBtn.addEventListener('click', () => {
+        const cards = arxivPapersList.querySelectorAll('.arxiv-paper-card');
+
+        if (arxivSelectedPapers.size > 0) {
+            // Deselect all
+            arxivSelectedPapers.clear();
+            cards.forEach((c) => c.classList.remove('selected'));
+        } else {
+            // Select all visible (up to 50)
+            let count = 0;
+            cards.forEach((card) => {
+                if (count >= 50) return;
+                const id = card.dataset.arxivId;
+                const titleEl = card.querySelector('.arxiv-paper-title');
+                arxivSelectedPapers.set(id, {
+                    arxiv_id: id,
+                    title: titleEl ? titleEl.textContent : id,
+                });
+                card.classList.add('selected');
+                count++;
+            });
+        }
+        updateSelectionUI();
+    });
+
+    // --- Load More ---
+    arxivLoadMoreBtn.addEventListener('click', () => {
+        performArxivSearch(false);
+    });
+
+    // --- Extract Selected ---
+    arxivExtractBtn.addEventListener('click', async () => {
+        if (arxivSelectedPapers.size === 0) return;
+
+        // Switch to progress view
+        hide(arxivResultsSection);
+        hide(arxivSearchSection);
+        show(arxivExtractProgress);
+        hide(arxivExtractionResults);
+
+        arxivProgressFill.style.width = '0%';
+        arxivExtractStatus.textContent = `Downloading ${arxivSelectedPapers.size} paper${arxivSelectedPapers.size > 1 ? 's' : ''} from arXiv...`;
+
+        try {
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                if (progress < 80) {
+                    progress += Math.random() * 3;
+                    arxivProgressFill.style.width = Math.min(progress, 80) + '%';
+                }
+                // Update status text based on progress
+                if (progress > 20 && progress < 50) {
+                    arxivExtractStatus.textContent = 'Downloading PDFs and extracting images...';
+                } else if (progress > 50) {
+                    arxivExtractStatus.textContent = 'Creating ZIP archives...';
+                }
+            }, 500);
+
+            const papersToExtract = Array.from(arxivSelectedPapers.values());
+
+            const response = await fetch('/arxiv/extract', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ papers: papersToExtract }),
+            });
+
+            clearInterval(progressInterval);
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.error || 'Extraction failed');
+            }
+
+            const data = await response.json();
+
+            arxivProgressFill.style.width = '100%';
+            arxivExtractStatus.textContent = 'Extraction complete!';
+
+            await new Promise((r) => setTimeout(r, 500));
+
+            arxivSessionId = data.session_id;
+
+            // Show extraction results using shared renderer
+            showResults(data, {
+                section: arxivExtractionResults,
+                progressSection: arxivExtractProgress,
+                summary: arxivExtractSummary,
+                errors: arxivExtractErrors,
+                grid: arxivExtractGrid,
+                downloadAll: arxivDownloadAll,
+                downloadEach: arxivDownloadEach,
+            });
+
+        } catch (error) {
+            arxivProgressFill.style.width = '100%';
+            arxivProgressFill.style.background = 'linear-gradient(135deg, #f87171, #dc2626)';
+            arxivExtractStatus.textContent = `Error: ${error.message}`;
+
+            setTimeout(() => {
+                hide(arxivExtractProgress);
+                show(arxivSearchSection);
+                show(arxivResultsSection);
+                arxivProgressFill.style.background = '';
+            }, 4000);
+        }
+    });
+
+    // --- New Search (from results) ---
+    arxivNewSearch.addEventListener('click', () => {
+        if (arxivSessionId) {
+            fetch(`/cleanup/${arxivSessionId}`, { method: 'POST' }).catch(() => { });
+            arxivSessionId = null;
+        }
+
+        arxivSelectedPapers.clear();
+        arxivPapersList.innerHTML = '';
+        arxivExtractGrid.innerHTML = '';
+        updateSelectionUI();
+
+        hide(arxivExtractionResults);
+        hide(arxivExtractProgress);
+        hide(arxivResultsSection);
+        show(arxivSearchSection);
+
+        arxivQuery.value = '';
+        arxivQuery.focus();
+    });
+
 })();
