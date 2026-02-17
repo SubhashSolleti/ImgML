@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="ImgML — Extract images from research paper PDFs automatically. Upload papers, identify figures, and download organized images.">
+    <title>ImgML — Research Paper Image Extractor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- Animated background -->
+    <div class="bg-grid"></div>
+    <div class="bg-glow glow-1"></div>
+    <div class="bg-glow glow-2"></div>
+    <div class="bg-glow glow-3"></div>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="4" y="4" width="32" height="32" rx="8" stroke="url(#grad)" stroke-width="2.5"/>
+                        <circle cx="15" cy="22" r="4" fill="url(#grad)"/>
+                        <circle cx="26" cy="16" r="3" fill="url(#grad)" opacity="0.7"/>
+                        <path d="M6 28 L16 18 L22 24 L34 12" stroke="url(#grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+                        <defs>
+                            <linearGradient id="grad" x1="0" y1="0" x2="40" y2="40">
+                                <stop offset="0%" stop-color="#a78bfa"/>
+                                <stop offset="100%" stop-color="#6366f1"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <div>
+                    <h1>ImgML</h1>
+                    <p class="tagline">Research Paper Image Extractor</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- Upload Section -->
+        <section id="upload-section" class="card upload-card">
+            <div id="drop-zone" class="drop-zone">
+                <div class="drop-zone-content">
+                    <div class="upload-icon">
+                        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M32 44V20M32 20L22 30M32 20L42 30" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M12 40V48C12 50.2 13.8 52 16 52H48C50.2 52 52 50.2 52 48V40" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <h2>Drop your PDFs here</h2>
+                    <p>or click to browse files</p>
+                    <span class="supported-formats">Supports PDF files • Up to 100 MB</span>
+                </div>
+                <input type="file" id="file-input" multiple accept=".pdf" hidden>
+            </div>
+
+            <!-- Selected files list -->
+            <div id="file-list" class="file-list hidden">
+                <h3>Selected Files</h3>
+                <ul id="file-items"></ul>
+                <button id="extract-btn" class="btn btn-primary">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Extract Images
+                </button>
+            </div>
+        </section>
+
+        <!-- Progress Section -->
+        <section id="progress-section" class="card hidden">
+            <div class="progress-content">
+                <div class="spinner"></div>
+                <h3>Extracting images...</h3>
+                <p id="progress-text">Processing your research papers</p>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section id="results-section" class="card hidden">
+            <div class="results-header">
+                <div>
+                    <h2 id="results-title">Extraction Complete</h2>
+                    <p id="results-summary"></p>
+                </div>
+                <div class="results-actions">
+                    <button id="download-btn" class="btn btn-primary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Download ZIP
+                    </button>
+                    <button id="new-extraction-btn" class="btn btn-ghost">
+                        New Extraction
+                    </button>
+                </div>
+            </div>
+
+            <!-- Error messages -->
+            <div id="errors-container" class="errors hidden"></div>
+
+            <!-- Image grid -->
+            <div id="image-grid" class="image-grid"></div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>ImgML • Extracts figures from research papers with ease</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
